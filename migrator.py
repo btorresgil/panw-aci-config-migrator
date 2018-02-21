@@ -124,6 +124,7 @@ def migrate_interface_folder_keys(tenant, app_name):
                 # Copy the folder to make a backup
                 backup = deepcopy(folder)
                 backup.name = backup.name + '_premigration'
+                backup.ctrctNameOrLbl = backup.ctrctNameOrLbl + '_premigration'
                 epg.add_child(backup)
                 # Modify the folder it is DP 1.3 compatible
                 folder.key = 'Interface'
@@ -370,6 +371,7 @@ def revert_interface_folders(tenant, app_name):
                 epg.add_child(backup)
                 backup.mark_as_deleted()
                 folder.name = folder.name[:-13]
+                folder.ctrctNameOrLbl = folder.ctrctNameOrLbl[:-13]
     return changes_made
 
 
