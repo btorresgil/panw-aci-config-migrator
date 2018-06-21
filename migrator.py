@@ -2,6 +2,7 @@
 
 import sys
 import os
+import re
 import logging
 from copy import deepcopy
 
@@ -60,10 +61,16 @@ def print_object_names(objects, objtype):
 
 
 def print_migration(object, tenant, app, epg, other='', action='Migrating'):
-    print('{action} {oc}{object}{endc} with key {kc}{key}{endc} in {lc}{tenant}/{app}/{epg}{other}{endc}'.format(
+    try:
+        key = object.keys()[0]
+        obj = object[key]['attributes']['tCl']
+    except (AttributeError, KeyError):
+        key = getattr(object, 'key', 'n/a')
+        obj = getattr(object, 'name', object)
+    print('{action} {oc}{obj}{endc} with key {kc}{key}{endc} in {lc}{tenant}/{app}/{epg}{other}{endc}'.format(
         action=action,
-        object=getattr(object, 'name', object),
-        key=getattr(object, 'key', 'n/a'),
+        obj=obj,
+        key=key,
         tenant=tenant,
         app=app,
         epg=epg,
@@ -77,8 +84,7 @@ def print_migration(object, tenant, app, epg, other='', action='Migrating'):
 
 def get_clusters(session, tenant=None):
     query_target_type = 'subtree'
-    #apic_class = 'vnsLDevVip,vnsRsMDevAtt'
-    apic_class = 'vnsRsMDevAtt,vnsDevMgr,vnsChassis'
+    apic_class = 'vnsRsMDevAtt,vnsRsDevMgrToMDevMgr,vnsRsChassisToMChassis,vnsRsMetaIf,vnsRsMConnAtt,vnsRsNodeToAbsFuncProf,vnsRsNodeToMFunc'
     if query_target_type not in ['self', 'children', 'subtree']:
         raise ValueError
     if isinstance(tenant, str):
@@ -248,6 +254,29 @@ def migrate_default_gateway(tenant, app_name):
     return changes_made
 
 
+def _next_level(children, dn, object_key, reference):
+    dn_split = dn.split('/', 1)
+    level = dn_split[0].split('-')
+    if len(level) < 2:
+        children.append({object_key: {'attributes': {'tDn': reference}}})
+        return children
+    key = 'vns' + level[0][0].upper() + level[0][1:]
+    if key == 'vnsAbsFConn':
+        key = 'vnsAbsFuncConn'
+    name = level[1]
+    found = False
+    for c in children:
+        if key in c and c[key]['attributes']['name'] == name:
+            new_children = c[key]['children']
+            found = True
+    if not found:
+        new_child = {key: {'attributes': {'name': name},
+                           'children': []}}
+        children.append(new_child)
+        new_children = new_child[key]['children']
+    return _next_level(new_children, dn_split[1], object_key, reference)
+
+
 def migrate_clusters(tenant, session):
     """Migrate clusters to new device package
 
@@ -260,22 +289,14 @@ def migrate_clusters(tenant, session):
     result = []
     cluster_rels = get_clusters(session, tenant)
     for cluster in cluster_rels:
-        if 'vnsRsMDevAtt' in cluster and cluster['vnsRsMDevAtt']['attributes']['tDn'] == 'uni/infra/mDev-PaloAltoNetworks-PANOS-1.2':
-            cluster_name = cluster['vnsRsMDevAtt']['attributes']['dn'].split('/')[2][8:]
-            print_migration(cluster_name, tenant.name, '', '', action='Upgrading cluster to 1.3:')
-            rsmdevatt = {'attributes': {'tDn': 'uni/infra/mDev-PaloAltoNetworks-PANOS-1.3'}}
-            result.append({'vnsLDevVip': {'attributes': {'name': cluster_name},
-                                          'children': [{'vnsRsMDevAtt': rsmdevatt}]}})
-        elif 'vnsRsDevMgrToMDevMgr' in cluster and cluster['vnsRsDevMgrToMDevMgr']['attributes']['tDn'] == 'uni/infra/mDevMgr-PaloAltoNetworks-Panorama-1.2':
-            cluster_name = cluster.name
-            print_migration(cluster_name, tenant.name, '', '', action='Upgrading device manager to 1.3:')
-            cluster['vnsRsDevMgrToMDevMgr']['attributes']['tDn'] = 'uni/infra/mDevMgr-PaloAltoNetworks-Panorama-1.3'
-            result.append(cluster)
-        elif 'vnsRsChassisToMChassis' in cluster and cluster['vnsRsChassisToMChassis']['attributes']['tDn'] == 'uni/infra/mChassis-PaloAltoNetworks-Chassis-1.2':
-            cluster_name = cluster.name
-            print_migration(cluster_name, tenant.name, '', '', action='Upgrading chassis to 1.3:')
-            cluster['vnsRsChassisToMChassis']['attributes']['tDn'] = 'uni/infra/mChassis-PaloAltoNetworks-Chassis-1.3'
-            result.append(cluster)
+        key = cluster.keys()[0]
+        attributes = cluster[key]['attributes']
+        pattern = r"^uni/infra/(mDev|mDevMgr|mChassis)-PaloAltoNetworks-(PANOS|Panorama|Chassis)-1.2"
+        if re.match(pattern, attributes['tDn']):
+            print_migration(cluster, tenant.name, '', '', action='Upgrading DP Reference to 1.3:')
+            reference = re.sub(pattern, "uni/infra/\g<1>-PaloAltoNetworks-\g<2>-1.3", attributes['tDn'])
+            dn = attributes['dn'].split('/', 2)[2]
+            _next_level(result, dn, key, reference)
     return result
 
 
@@ -387,22 +408,14 @@ def revert_clusters(tenant, session):
     result = []
     cluster_rels = get_clusters(session, tenant)
     for cluster in cluster_rels:
-        if cluster['vnsRsMDevAtt']['attributes']['tDn'] == 'uni/infra/mDev-PaloAltoNetworks-PANOS-1.3':
-            cluster_name = cluster['vnsRsMDevAtt']['attributes']['dn'].split('/')[2][8:]
-            print_migration(cluster_name, tenant.name, '', '', action='Reverting cluster to 1.2:')
-            rsmdevatt = {'attributes': {'tDn': 'uni/infra/mDev-PaloAltoNetworks-PANOS-1.2'}}
-            result.append({'vnsLDevVip': {'attributes': {'name': cluster_name},
-                                          'children': [{'vnsRsMDevAtt': rsmdevatt}]}})
-        elif 'vnsRsDevMgrToMDevMgr' in cluster and cluster['vnsRsDevMgrToMDevMgr']['attributes']['tDn'] == 'uni/infra/mDevMgr-PaloAltoNetworks-Panorama-1.3':
-            cluster_name = cluster.name
-            print_migration(cluster_name, tenant.name, '', '', action='Reverting device manager to 1.2:')
-            cluster['vnsRsDevMgrToMDevMgr']['attributes']['tDn'] = 'uni/infra/mDevMgr-PaloAltoNetworks-Panorama-1.2'
-            result.append(cluster)
-        elif 'vnsRsChassisToMChassis' in cluster and cluster['vnsRsChassisToMChassis']['attributes']['tDn'] == 'uni/infra/mChassis-PaloAltoNetworks-Chassis-1.3':
-            cluster_name = cluster.name
-            print_migration(cluster_name, tenant.name, '', '', action='Reverting chassis to 1.2:')
-            cluster['vnsRsChassisToMChassis']['attributes']['tDn'] = 'uni/infra/mChassis-PaloAltoNetworks-Chassis-1.2'
-            result.append(cluster)
+        key = cluster.keys()[0]
+        attributes = cluster[key]['attributes']
+        pattern = r"^uni/infra/(mDev|mDevMgr|mChassis)-PaloAltoNetworks-(PANOS|Panorama|Chassis)-1.3"
+        if re.match(pattern, attributes['tDn']):
+            print_migration(cluster, tenant.name, '', '', action='Reverting DP Reference to 1.2:')
+            reference = re.sub(pattern, "uni/infra/\g<1>-PaloAltoNetworks-\g<2>-1.2", attributes['tDn'])
+            dn = attributes['dn'].split('/', 2)[2]
+            _next_level(result, dn, key, reference)
     return result
 
 
