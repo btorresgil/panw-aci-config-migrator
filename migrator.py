@@ -145,6 +145,43 @@ def migrate_interface_folder_keys(tenant, app_name):
     return changes_made
 
 
+def migrate_ip(tenant, app_name):
+    """Migrate ip address
+
+    Args:
+        tenant (aci.Tenant): The tenant to modify
+        app_name (str): Name of AppProfile
+
+    Returns:
+        bool: True if changes made, False if no changes made
+    """
+    changes_made = False
+    app = tenant.get_child(aci.AppProfile, app_name)
+    if not app:
+        print('Error getting AppProfile: {0}'.format(app_name))
+        return False
+    epgs = app.get_children(aci.EPG)
+    for epg in epgs:
+        for folder in epg.get_children(aci.Folder):
+            if folder.key != 'Interface':
+                continue
+            layerfolders = folder.get_children(aci.Folder)
+            for layerfolder in layerfolders:
+                if layerfolder.key != 'Layer3Interface':
+                    continue
+                for param in layerfolder.get_children(aci.Parameter):
+                    if param.key != 'ipv4_address':
+                        continue
+                    print_migration(param, tenant.name, app.name, epg.name, '/'+folder.name+'/'+layerfolder.name)
+                    changes_made = True
+                    # Create new param with different key for IP
+                    new_ip = aci.Parameter('ip', layerfolder)
+                    new_ip.key = 'ip'
+                    new_ip.value = param.value
+                    param.mark_as_deleted()
+    return changes_made
+
+
 def migrate_zones_and_vlans(tenant, app_name):
     """Migrate zones and vlans
 
@@ -191,7 +228,7 @@ def migrate_zones_and_vlans(tenant, app_name):
                         # Create a reference to new folder
                     elif param.key == 'security_zone':
                         new_ref_key = 'zone'
-                        # For zones, add a mode paramter
+                        # For zones, add a mode parameter
                         new_folder.key = 'Zone'
                         layer = aci.Parameter('mode', new_folder)
                         layer.key = 'mode'
@@ -244,13 +281,18 @@ def migrate_default_gateway(tenant, app_name):
                     new_folder.nodeNameOrLbl = folder.nodeNameOrLbl
                     new_folder.scopedBy = folder.scopedBy
                     new_folder.key = 'StaticRoute'
-                    # Add paramters to StaticRoute folder
+                    # Add parameters to StaticRoute folder
                     nexthop = aci.Parameter('nexthop', new_folder)
                     nexthop.key = 'nexthop'
                     nexthop.value = param.value
                     destination = aci.Parameter('destination', new_folder)
                     destination.key = 'destination'
                     destination.value = '0.0.0.0/0'
+                    # Create relation layer folder to point at new folder
+                    relation = aci.Relation('static_route_rel', layerfolder)
+                    relation.key = 'static_route'
+                    relation.targetName = new_folder.name
+                    param.mark_as_deleted()
     return changes_made
 
 
@@ -471,6 +513,7 @@ def main():
     # Perform in-memory migration
     if args.parameters and not args.revert:
         changes_made = migrate_interface_folder_keys(tenant, args.app) or changes_made
+        changes_made = migrate_ip(tenant, args.app) or changes_made
         changes_made = migrate_zones_and_vlans(tenant, args.app) or changes_made
         changes_made = migrate_default_gateway(tenant, args.app) or changes_made
 
