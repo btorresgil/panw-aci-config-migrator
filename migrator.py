@@ -298,7 +298,7 @@ def migrate_default_gateway(tenant, app_name):
 
 def _next_level(children, dn, object_key, reference):
     dn_split = dn.split('/', 1)
-    level = dn_split[0].split('-')
+    level = dn_split[0].split('-', 1)
     if len(level) < 2:
         children.append({object_key: {'attributes': {'tDn': reference}}})
         return children
