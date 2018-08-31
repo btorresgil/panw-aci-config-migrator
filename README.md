@@ -94,9 +94,12 @@ A more complex configuration with multiple AppProfiles in a Tenant using a Clust
     ./migrator.py -u https://10.1.2.3 -l admin --tenant MyTenant --app MyApp1 --parameters
     ./migrator.py -u https://10.1.2.3 -l admin --tenant MyTenant --app MyApp2 --parameters
     
-    # Migrate clusters in common tenant
+    # Migrate clusters in MyTenant and common tenant
+    ./migrator.py -u https://10.1.2.3 -l admin --tenant MyTenant --clusters
     ./migrator.py -u https://10.1.2.3 -l admin --tenant common --clusters
     
+    # You need to run --clusters in both tenants
+        
     # Check that everything migrated correctly, then...
     
     # Cleanup the old parameters
